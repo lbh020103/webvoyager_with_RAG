@@ -38,6 +38,14 @@ We use Selenium to build the online web browsing environment.
     conda create -n webvoyager python=3.10
     conda activate webvoyager
     pip install -r requirements.txt
+    pip install langchain
+    pip install sentence-transformers torch
+    pip install pdfplumber
+    pip install langchain-community
+    pip install chromadb
+    pip install httpx==0.27.2
+    pip install pymupdf
+    pip install pypdf
     ```
 
 ## Data
