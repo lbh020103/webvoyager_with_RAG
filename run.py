@@ -14,8 +14,13 @@ from selenium.webdriver.common.action_chains import ActionChains
 
 from prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_TEXT_ONLY
 from openai import OpenAI
-from utils import get_web_element_rect, encode_image, extract_information, print_message,\
-    get_webarena_accessibility_tree, get_pdf_retrieval_ans_from_assistant, clip_message_and_obs, clip_message_and_obs_text_only
+from utils import get_web_element_rect, encode_image, extract_information, print_message, \
+    get_webarena_accessibility_tree, get_pdf_retrieval_ans_from_assistant, clip_message_and_obs, \
+    clip_message_and_obs_text_only
+from pdf_rag import PDFEnhancementPipeline
+from instruction_manual_generator import InstructionManualGenerator
+from typing import List, Dict, Optional, Tuple, Any, Union, Protocol, Set
+from datetime import datetime
 
 
 def setup_logger(folder_path):
@@ -72,7 +77,8 @@ def format_msg(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text):
             curr_msg = {
                 'role': 'user',
                 'content': [
-                    {'type': 'text', 'text': f"Observation:{warn_obs} please analyze the attached screenshot and give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"},
+                    {'type': 'text',
+                     'text': f"Observation:{warn_obs} please analyze the attached screenshot and give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"},
                     {
                         'type': 'image_url',
                         'image_url': {"url": f"data:image/png;base64,{web_img_b64}"}
@@ -83,7 +89,8 @@ def format_msg(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text):
             curr_msg = {
                 'role': 'user',
                 'content': [
-                    {'type': 'text', 'text': f"Observation: {pdf_obs} Please analyze the response given by Assistant, then consider whether to continue iterating or not. The screenshot of the current page is also attached, give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"},
+                    {'type': 'text',
+                     'text': f"Observation: {pdf_obs} Please analyze the response given by Assistant, then consider whether to continue iterating or not. The screenshot of the current page is also attached, give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"},
                     {
                         'type': 'image_url',
                         'image_url': {"url": f"data:image/png;base64,{web_img_b64}"}
@@ -173,7 +180,8 @@ def exec_action_type(info, web_ele, driver_task):
     ele_tag_name = web_ele.tag_name.lower()
     ele_type = web_ele.get_attribute("type")
     # outer_html = web_ele.get_attribute("outerHTML")
-    if (ele_tag_name != 'input' and ele_tag_name != 'textarea') or (ele_tag_name == 'input' and ele_type not in ['text', 'search', 'password', 'email', 'tel']):
+    if (ele_tag_name != 'input' and ele_tag_name != 'textarea') or (
+            ele_tag_name == 'input' and ele_type not in ['text', 'search', 'password', 'email', 'tel']):
         warn_obs = f"note: The web element you're trying to type may not be a textbox, and its tag name is <{web_ele.tag_name}>, type is {ele_type}."
     try:
         # Not always work to delete
@@ -193,7 +201,8 @@ def exec_action_type(info, web_ele, driver_task):
     actions.pause(1)
 
     try:
-        driver_task.execute_script("""window.onkeydown = function(e) {if(e.keyCode == 32 && e.target.type != 'text' && e.target.type != 'textarea' && e.target.type != 'search') {e.preventDefault();}};""")
+        driver_task.execute_script(
+            """window.onkeydown = function(e) {if(e.keyCode == 32 && e.target.type != 'text' && e.target.type != 'textarea' && e.target.type != 'search') {e.preventDefault();}};""")
     except:
         pass
 
@@ -211,9 +220,9 @@ def exec_action_scroll(info, web_eles, driver_task, args, obs_info):
     scroll_content = info['content']
     if scroll_ele_number == "WINDOW":
         if scroll_content == 'down':
-            driver_task.execute_script(f"window.scrollBy(0, {args.window_height*2//3});")
+            driver_task.execute_script(f"window.scrollBy(0, {args.window_height * 2 // 3});")
         else:
-            driver_task.execute_script(f"window.scrollBy(0, {-args.window_height*2//3});")
+            driver_task.execute_script(f"window.scrollBy(0, {-args.window_height * 2 // 3});")
     else:
         if not args.text_only:
             scroll_ele_number = int(scroll_ele_number)
@@ -221,7 +230,8 @@ def exec_action_scroll(info, web_eles, driver_task, args, obs_info):
         else:
             element_box = obs_info[scroll_ele_number]['union_bound']
             element_box_center = (element_box[0] + element_box[2] // 2, element_box[1] + element_box[3] // 2)
-            web_ele = driver_task.execute_script("return document.elementFromPoint(arguments[0], arguments[1]);", element_box_center[0], element_box_center[1])
+            web_ele = driver_task.execute_script("return document.elementFromPoint(arguments[0], arguments[1]);",
+                                                 element_box_center[0], element_box_center[1])
         actions = ActionChains(driver_task)
         driver_task.execute_script("arguments[0].focus();", web_ele)
         if scroll_content == 'down':
@@ -231,11 +241,133 @@ def exec_action_scroll(info, web_eles, driver_task, args, obs_info):
     time.sleep(3)
 
 
+def index_pdf(
+        pdf_path: str,
+        output_dir: str,
+        api_key: str,
+        org_id: str,
+        logger,
+        persist_directory: str = "./chroma_db"
+) -> Dict[str, Any]:
+    """
+    Indexes a PDF and converts it to Markdown.
+
+    Args:
+        pdf_path: Path to the PDF file.
+        output_dir: Output directory.
+        api_key: OpenAI API key.
+        org_id: OpenAI organization ID.
+        logger: Logger instance.
+        persist_directory: Directory for storing the index.
+
+    Returns:
+        Dict[str, Any]: Contains information about the original PDF, Markdown file, image count, etc.
+    """
+    # Initialize the pipeline
+    pipeline = PDFEnhancementPipeline(
+        openai_api_key=api_key,
+        logger=logger,
+        embedding_type="openai",
+        openai_org_id=org_id,
+        persist_directory=persist_directory
+    )
+
+    logger.info(f"Starting to process {pdf_path}...")
+    result = pipeline.process_pdf(
+        pdf_path=pdf_path,
+        output_dir=output_dir,
+        add_image_descriptions=True,
+        index_for_rag=True,
+        overwrite_enhanced_md=False
+    )
+
+    logger.info("Processing completed:")
+    logger.info(f"- Original PDF: {result['original_pdf']}")
+    logger.info(f"- Markdown file: {result['markdown_path']}")
+    logger.info(f"- Number of processed images: {result['image_count']}")
+    if 'enhanced_markdown_path' in result:
+        logger.info(f"- Enhanced Markdown: {result['enhanced_markdown_path']}")
+
+    return result
+
+
+def search_rag(
+        query: str,
+        api_key: str,
+        org_id: str,
+        logger,
+        persist_directory: str = "./chroma_db",
+        k: int = 20
+) -> List[Dict]:
+    """
+    Performs a search on the indexed data.
+
+    Args:
+        query: User query.
+        api_key: OpenAI API key.
+        org_id: OpenAI organization ID.
+        logger: Logger instance.
+        persist_directory: Directory where the index is stored.
+        k: Number of results to return.
+
+    Returns:
+        List[Dict]: A list of dictionaries containing search results.
+    """
+    # Initialize the pipeline
+    pipeline = PDFEnhancementPipeline(
+        openai_api_key=api_key,
+        logger=logger,
+        embedding_type="openai",
+        openai_org_id=org_id,
+        persist_directory=persist_directory
+    )
+
+    logger.info(f"Searching for: {query}")
+    results = pipeline.search(query=query, k=k)
+    filtered_results = [{k: d[k] for k in ["section", "content", "source"] if k in d} for d in results]
+
+    return filtered_results
+
+
+def generate_instruction_manual(
+        api_key: str,
+        org_id: str,
+        task_goal: str,
+        filtered_results: List[Dict]
+) -> str:
+    """
+    Generates an instruction manual based on filtered results.
+
+    Args:
+        api_key: OpenAI API key for authentication.
+        org_id: OpenAI organization ID.
+        task_goal: The goal of the task that the manual will help accomplish.
+        filtered_results: The processed or filtered results that will be included in the manual.
+
+    Returns:
+        Dict[str, Any]: A dictionary containing the instruction manual, including the API key,
+                        organization ID, task goal, and filtered results.
+    """
+
+    # Initialize the manual generator and generate the manual
+    manual_generator = InstructionManualGenerator(
+        openai_api_key=api_key,
+        openai_org_id=org_id,
+        task_goal=task_goal,
+        results=filtered_results
+    )
+
+    # Generate and return the manual
+    manual = manual_generator.generate_instruction_manual()
+    return manual
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--test_file', type=str, default='data/test.json')
     parser.add_argument('--max_iter', type=int, default=5)
     parser.add_argument("--api_key", default="key", type=str, help="YOUR_OPENAI_API_KEY")
+    parser.add_argument("--api_organization_id", default=None, type=str, help="YOUR_OPENAI_ORGANIZATION_ID")
     parser.add_argument("--api_model", default="gpt-4-vision-preview", type=str, help="api model name")
     parser.add_argument("--output_dir", type=str, default='results')
     parser.add_argument("--seed", type=int, default=None)
@@ -251,10 +383,11 @@ def main():
     parser.add_argument("--window_height", type=int, default=768)  # for headless mode, there is no address bar
     parser.add_argument("--fix_box_color", action='store_true')
 
+    parser.add_argument("--pdf_path", type=str, default='data/arXiv.pdf')
     args = parser.parse_args()
 
     # OpenAI client
-    client = OpenAI(api_key=args.api_key)
+    client = OpenAI(api_key=args.api_key, organization=args.api_organization_id)
 
     options = driver_config(args)
 
@@ -270,6 +403,10 @@ def main():
             tasks.append(json.loads(line))
 
 
+    markdown_output_dir = "output"
+    index_pdf(pdf_path=args.pdf_path, output_dir=markdown_output_dir, api_key=args.api_key, org_id=args.api_organization_id,
+              logger=logging)
+
     for task_id in range(len(tasks)):
         task = tasks[task_id]
         task_dir = os.path.join(result_dir, 'task{}'.format(task["id"]))
@@ -281,14 +418,16 @@ def main():
 
         # About window size, 765 tokens
         # You can resize to height = 512 by yourself (255 tokens, Maybe bad performance)
-        driver_task.set_window_size(args.window_width, args.window_height)  # larger height may contain more web information
+        driver_task.set_window_size(args.window_width,
+                                    args.window_height)  # larger height may contain more web information
         driver_task.get(task['web'])
         try:
             driver_task.find_element(By.TAG_NAME, 'body').click()
         except:
             pass
         # sometimes enter SPACE, the page will sroll down
-        driver_task.execute_script("""window.onkeydown = function(e) {if(e.keyCode == 32 && e.target.type != 'text' && e.target.type != 'textarea') {e.preventDefault();}};""")
+        driver_task.execute_script(
+            """window.onkeydown = function(e) {if(e.keyCode == 32 && e.target.type != 'text' && e.target.type != 'textarea') {e.preventDefault();}};""")
         time.sleep(5)
 
         # We only deal with PDF file
@@ -310,8 +449,19 @@ def main():
             messages = [{'role': 'system', 'content': SYSTEM_PROMPT_TEXT_ONLY}]
             obs_prompt = "Observation: please analyze the accessibility tree and give the Thought and Action."
 
-        init_msg = f"""Now given a task: {task['ques']}  Please interact with https://www.example.com and get the answer. \n"""
+        rag_results = search_rag(query=task['ques'], api_key=args.api_key, org_id=args.api_organization_id,
+                                 logger=logging)
+        manual = generate_instruction_manual(api_key=args.api_key, org_id=args.api_organization_id,
+                                             task_goal=task['ques'], filtered_results=rag_results)
+        logging.info(f"manual: {manual}")
+
+        today_date = datetime.today().strftime('%Y-%m-%d')
+        init_msg = f"""Today is {today_date}. Now given a task: {task['ques']}  Please interact with https://www.example.com and get the answer. \n"""
         init_msg = init_msg.replace('https://www.example.com', task['web'])
+        init_msg += f"""Refer to the provided manuals and QA pairs, and take necessary steps and methods to complete the task."""
+        init_msg += f"""\n
+[Key Guidelines You MUST follow]
+[Manuals and QA pairs]:{manual}"""
         init_msg = init_msg + obs_prompt
 
         it = 0
@@ -375,11 +525,11 @@ def main():
             else:
                 accumulate_prompt_token += prompt_tokens
                 accumulate_completion_token += completion_tokens
-                logging.info(f'Accumulate Prompt Tokens: {accumulate_prompt_token}; Accumulate Completion Tokens: {accumulate_completion_token}')
+                logging.info(
+                    f'Accumulate Prompt Tokens: {accumulate_prompt_token}; Accumulate Completion Tokens: {accumulate_completion_token}')
                 logging.info('API call complete...')
             gpt_4v_res = openai_response.choices[0].message.content
             messages.append({'role': 'assistant', 'content': gpt_4v_res})
-
 
             # remove the rects on the website
             if (not args.text_only) and rects:
@@ -388,7 +538,6 @@ def main():
                     driver_task.execute_script("arguments[0].remove()", rect_ele)
                 rects = []
                 # driver_task.save_screenshot(os.path.join(task_dir, 'screenshot{}_no_box.png'.format(it)))
-
 
             # extract action info
             try:
@@ -420,7 +569,9 @@ def main():
                         element_box = obs_info[click_ele_number]['union_bound']
                         element_box_center = (element_box[0] + element_box[2] // 2,
                                               element_box[1] + element_box[3] // 2)
-                        web_ele = driver_task.execute_script("return document.elementFromPoint(arguments[0], arguments[1]);", element_box_center[0], element_box_center[1])
+                        web_ele = driver_task.execute_script(
+                            "return document.elementFromPoint(arguments[0], arguments[1]);", element_box_center[0],
+                            element_box_center[1])
 
                     ele_tag_name = web_ele.tag_name.lower()
                     ele_type = web_ele.get_attribute("type")
@@ -434,10 +585,13 @@ def main():
                         time.sleep(10)
                         current_files = sorted(os.listdir(args.download_dir))
 
-                        current_download_file = [pdf_file for pdf_file in current_files if pdf_file not in download_files and pdf_file.endswith('.pdf')]
+                        current_download_file = [pdf_file for pdf_file in current_files if
+                                                 pdf_file not in download_files and pdf_file.endswith('.pdf')]
                         if current_download_file:
                             pdf_file = current_download_file[0]
-                            pdf_obs = get_pdf_retrieval_ans_from_assistant(client, os.path.join(args.download_dir, pdf_file), task['ques'])
+                            pdf_obs = get_pdf_retrieval_ans_from_assistant(client,
+                                                                           os.path.join(args.download_dir, pdf_file),
+                                                                           task['ques'])
                             shutil.copy(os.path.join(args.download_dir, pdf_file), task_dir)
                             pdf_obs = "You downloaded a PDF file, I ask the Assistant API to answer the task based on the PDF file and get the following response: " + pdf_obs
                         download_files = current_files
@@ -457,7 +611,9 @@ def main():
                         element_box = obs_info[type_ele_number]['union_bound']
                         element_box_center = (element_box[0] + element_box[2] // 2,
                                               element_box[1] + element_box[3] // 2)
-                        web_ele = driver_task.execute_script("return document.elementFromPoint(arguments[0], arguments[1]);", element_box_center[0], element_box_center[1])
+                        web_ele = driver_task.execute_script(
+                            "return document.elementFromPoint(arguments[0], arguments[1]);", element_box_center[0],
+                            element_box_center[1])
 
                     warn_obs = exec_action_type(info, web_ele, driver_task)
                     if 'wolfram' in task['web']:
