@@ -46,6 +46,8 @@ We use Selenium to build the online web browsing environment.
     pip install httpx==0.27.2
     pip install pymupdf
     pip install pypdf
+    pip install pymupdf4llm
+    pip install tiktoken
     ```
 
 ## Data

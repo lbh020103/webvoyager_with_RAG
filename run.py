@@ -345,7 +345,7 @@ def generate_instruction_manual(
         filtered_results: The processed or filtered results that will be included in the manual.
 
     Returns:
-        Dict[str, Any]: A dictionary containing the instruction manual, including the API key,
+        str: A dictionary containing the instruction manual, including the API key,
                         organization ID, task goal, and filtered results.
     """
 
@@ -461,7 +461,12 @@ def main():
         init_msg += f"""Refer to the provided manuals and QA pairs, and take necessary steps and methods to complete the task."""
         init_msg += f"""\n
 [Key Guidelines You MUST follow]
-[Manuals and QA pairs]:{manual}"""
+Before taking any action, analyze the provided Manuals and QA pairs as a whole to determine if they contain useful procedures, constraints, or guidelines relevant to this task.
+ - If they provide comprehensive guidance, strictly follow their instructions in an ordered and structured manner.
+ - If they contain partial but useful information, integrate it into your approach while filling in the gaps logically.
+ - If they are entirely irrelevant or insufficient, proceed with the best available method while ensuring completeness.
+[Manuals and QA pairs]:
+{manual}"""
         init_msg = init_msg + obs_prompt
 
         it = 0
