@@ -54,6 +54,8 @@ class DocumentConverter:
 
         Returns:
             Tuple[str, List[str]]: (Path to the Markdown file, List of extracted image paths)
+                - (str): The path to the generated Markdown file.
+                - (List[str]): A list of file paths to the extracted images.
         """
         # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
@@ -864,6 +866,7 @@ def main() -> None:
     # Set paths
     # pdf_path = "data/CCOP_1.pdf"
     pdf_path = "data/arXiv.pdf"
+    # pdf_path = "data/DOC-UseMenu_cashier_user.pdf"
     output_dir = "output"
 
     # Process PDF

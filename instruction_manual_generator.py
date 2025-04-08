@@ -1,18 +1,25 @@
 from openai import OpenAI
 import json
 import os
+from typing import Optional, List, Dict
 
 
 class InstructionManualGenerator:
-    def __init__(self, openai_api_key, openai_org_id, task_goal, results):
+    def __init__(
+        self,
+        openai_api_key: str,
+        task_goal: str,
+        results: List[Dict],
+        openai_org_id: Optional[str] = None
+    ):
         """
         Initialize the generator with API key, organization ID, task goal, and results.
 
         Args:
             openai_api_key (str): OpenAI API key.
-            openai_org_id (str): OpenAI organization ID.
             task_goal (str): The task goal string (e.g., identifying the professor of a course).
             results (List[Dict]): A list of dictionaries containing retrieved results.
+            openai_org_id (Optional[str]): OpenAI organization ID.
         """
         self.openai_client = OpenAI(
             api_key=openai_api_key,
@@ -26,102 +33,72 @@ class InstructionManualGenerator:
         Generates the prompt for OpenAI's GPT model based on task goal and results.
         :return: The formatted prompt string.
         """
-        # prompt = f"""
-        # You are a professional technical document assistant. Your task is to filter the relevant information from the provided retrieval results based on the given task goal and compile it into an instruction manual.
-        #
-        # ### Task Goal:
-        # {self.task_goal}
-        #
-        # ### Retrieval Results Example:
-        # Each result contains:
-        # - section: (The title information)
-        # - content: (The information retrieved)
-        # - source: (The source of the information)
-        #
-        # Please filter the results based on relevance to the task goal and output the relevant details in a structured format, including the title, description, and source:
-        # {json.dumps(self.results, ensure_ascii=False, indent=2)}
-        #
-        # ### Output Format:
-        # Please output the results in JSON format as shown below:
-        # ```json
-        # {{
-        #     "manual": [
-        #         {{
-        #             "title": "Relevant Title",
-        #             "description": "Detailed operation steps or findings",
-        #             "source": "Source of the information"
-        #         }},
-        #         ...
-        #     ]
-        # }}
-        # ```
-        # """
 
         prompt = f"""
-            You are a professional technical document assistant. Your task is to filter the relevant information from the provided retrieval results based on the given task goal and compile it into an instruction manual.
+You are a professional technical document assistant. Your task is to filter the relevant information from the provided retrieval results based on the given task goal and compile it into an instruction manual.
 
-            ### Task Goal:
-            {self.task_goal}
+### Task Goal:
+{self.task_goal}
 
-            ### Retrieval Results Example:
-            Each result contains:
-            - section: (The title information)
-            - content: (The information retrieved)
-            - source: (The source of the information)
+### Retrieval Results Example:
+Each result contains:
+- section: (The title information)
+- content: (The information retrieved)
+- source: (The source of the information)
 
-            ### Relevance Criteria:
-            - The goal is to compile an **instruction manual** that provides actionable steps to achieve the task.
-            - A result is **relevant** if it:
-              - Contains keywords or terminology directly related to any possible approach for completing the task goal
-              - Includes step-by-step instructions, procedures, or operations that could contribute to task completion
-              - Describes key functions, tools, or settings that might be useful for the task
-              - Contains configuration details, system behaviors, or technical information that could aid in achieving the goal
-              - Provides partial but useful information, even if it only addresses one aspect of the task
-              - Mentions alternative methods or approaches that could accomplish the same goal
-            - A result is **not relevant** if it:
-              - Contains no keywords or terminology related to any approach for completing the task
-              - Provides only general theoretical concepts without practical application
-              - Is completely unrelated to the task goal or any of its components
+### Relevance Criteria:
+- The goal is to compile an **instruction manual** that provides actionable steps to achieve the task.
+- A result is **relevant** if it:
+  - Contains keywords or terminology directly related to any possible approach for completing the task goal
+  - Includes step-by-step instructions, procedures, or operations that could contribute to task completion
+  - Describes key functions, tools, or settings that might be useful for the task
+  - Contains configuration details, system behaviors, or technical information that could aid in achieving the goal
+  - Provides partial but useful information, even if it only addresses one aspect of the task
+  - Mentions alternative methods or approaches that could accomplish the same goal
+- A result is **not relevant** if it:
+  - Contains no keywords or terminology related to any approach for completing the task
+  - Provides only general theoretical concepts without practical application
+  - Is completely unrelated to the task goal or any of its components
 
-            ### Filtering Process:
-            1. **Identify Relevant Information**  
-               - Consider whether the retrieved content helps in accomplishing the task through ANY possible approach
-               - Even if the information describes just one possible method or only a portion of a method, include it
-               - If a section contains even one relevant keyword or concept related to task completion, consider it relevant
+### Filtering Process:
+1. **Identify Relevant Information**  
+   - Consider whether the retrieved content helps in accomplishing the task through ANY possible approach
+   - Even if the information describes just one possible method or only a portion of a method, include it
+   - If a section contains even one relevant keyword or concept related to task completion, consider it relevant
 
-            2. **Structured Output**  
-               - Format relevant results in JSON, including the title, description, and source  
-               - For irrelevant results, provide a clear explanation of why they do not contribute to the task goal
+2. **Structured Output**  
+   - Format relevant results in JSON, including the title, description, and source  
+   - For irrelevant results, provide a clear explanation of why they do not contribute to the task goal
 
 
-            ### Retrieval Results
-            {json.dumps(self.results, ensure_ascii=False, indent=2)}
+### Retrieval Results
+{json.dumps(self.results, ensure_ascii=False, indent=2)}
 
-            ### Output Format:
-            Please output the results in the following JSON format:
-            ```json
-            {{
-                "manual": [
-                    {{
-                        "title": "Relevant Title",
-                        "description": "Detailed operation steps or findings",
-                        "source": "Source of the information"
-                    }}
-                    ...
-                ],
-                "irrelevant_explanations": [
-                    {{
-                        "section": "Title of the irrelevant section",
-                        "reason": "Explanation of why this result is not relevant"
-                    }}
-                    ...
-                ]
-            }}
-            ```
-            """
+### Output Format:
+Please output the results in the following JSON format:
+```json
+{{
+    "manual": [
+        {{
+            "title": "Relevant Title",
+            "description": "Detailed operation steps or findings",
+            "source": "Source of the information"
+        }}
+        ...
+    ],
+    "irrelevant_explanations": [
+        {{
+            "section": "Title of the irrelevant section",
+            "reason": "Explanation of why this result is not relevant"
+        }}
+        ...
+    ]
+}}
+```
+"""
         return prompt
 
-    def _call_openai(self, prompt):
+    def _call_openai(self, prompt: str) -> str:
         """
         Call OpenAI's GPT API with the provided prompt and return the response.
 
@@ -129,11 +106,10 @@ class InstructionManualGenerator:
             prompt (str): The generated prompt string.
 
         Returns:
-            Dict: The response from OpenAI's API.
+            str: The response from OpenAI's API.
         """
         response = self.openai_client.chat.completions.create(
             model="gpt-4-turbo",
-            # model="gpt-4o",
             messages=[{"role": "system", "content": "You are a professional technical document assistant."},
                       {"role": "user", "content": prompt}],
             temperature=0.3
@@ -141,7 +117,7 @@ class InstructionManualGenerator:
 
         return response.choices[0].message.content
 
-    def generate_instruction_manual(self):
+    def generate_instruction_manual(self) -> str:
         """
         Generate an instruction manual by filtering relevant results based on the task goal.
 
@@ -157,7 +133,6 @@ class InstructionManualGenerator:
         response_text = response_text.replace("```", "")
         response = json.loads(response_text)
         manual_obj = response["manual"]
-        # print(json.dumps(manual_obj, indent=2, ensure_ascii=False))
 
         manual_str = ""
         for entry in manual_obj:
