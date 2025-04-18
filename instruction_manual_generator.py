@@ -2,6 +2,7 @@ from openai import OpenAI
 import json
 import os
 from typing import Optional, List, Dict
+from json.decoder import JSONDecodeError
 
 
 class InstructionManualGenerator:
@@ -13,7 +14,7 @@ class InstructionManualGenerator:
         openai_org_id: Optional[str] = None
     ):
         """
-        Initialize the generator with API key, organization ID, task goal, and results.
+        Initialize the instruction manual generator for WebVoyager tasks.
 
         Args:
             openai_api_key (str): OpenAI API key.
@@ -131,12 +132,22 @@ Please output the results in the following JSON format:
         response_text = self._call_openai(prompt)
         response_text = response_text.replace("```json", "")
         response_text = response_text.replace("```", "")
-        response = json.loads(response_text)
-        manual_obj = response["manual"]
 
         manual_str = ""
-        for entry in manual_obj:
-            manual_str += f"title: {entry['title']}\ndescription: {entry['description']}\nsource: {entry['source']}\n\n"
+        try:
+            response = json.loads(response_text)
+            manual_obj = response["manual"]
+
+            for entry in manual_obj:
+                manual_str += f"title: {entry['title']}\ndescription: {entry['description']}\nsource: {entry['source']}\n\n"
+
+        except JSONDecodeError as e:
+            print(f"[Warning] JSONDecodeError: {e}")
+            manual_str = ""
+
+        except (KeyError, TypeError) as e:
+            print(f"[Warning] JSON format error: {e}")
+            manual_str = ""
 
         return manual_str
 

@@ -31,7 +31,7 @@ def setup_logger(folder_path):
         logger.removeHandler(handler)
         handler.close()
 
-    handler = logging.FileHandler(log_file_path)
+    handler = logging.FileHandler(log_file_path, encoding='utf-8')
     formatter = logging.Formatter('%(levelname)s - %(message)s')
     handler.setFormatter(formatter)
     logger.addHandler(handler)
@@ -325,6 +325,10 @@ def search_rag(
     logger.info(f"Searching for: {query}")
     results = pipeline.search(query=query, k=k)
     filtered_results = [{k: d[k] for k in ["section", "content", "source"] if k in d} for d in results]
+    results_str = ""
+    for entry in filtered_results:
+        results_str += f"section: {entry['section']}\ncontent: {entry['content']}\nsource: {entry['source']}\n\n"
+    logger.info(f"Searching results:\n {results_str}")
 
     return filtered_results
 
@@ -453,7 +457,7 @@ def main():
                                  logger=logging)
         manual = generate_instruction_manual(api_key=args.api_key, org_id=args.api_organization_id,
                                              task_goal=task['ques'], filtered_results=rag_results)
-        logging.info(f"manual: {manual}")
+        logging.info(f"manual:\n {manual}")
 
         today_date = datetime.today().strftime('%Y-%m-%d')
         init_msg = f"""Today is {today_date}. Now given a task: {task['ques']}  Please interact with https://www.example.com and get the answer. \n"""
