@@ -133,12 +133,18 @@ def auto_eval_by_gpt4v(process_dir, openai_client, api_model, img_num):
     return auto_eval_res
 
 
+def calculate_accuracy(results):
+    if not results:
+        return 0.0
+    return sum(results) / len(results)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--process_dir', type=str, default='results')
     parser.add_argument('--lesson_dir', type=str, default='results')
     parser.add_argument("--api_key", default="key", type=str, help="YOUR_OPENAI_API_KEY")
-    parser.add_argument("--api_model", default="gpt-4-vision-preview", type=str, help="api model name")
+    parser.add_argument("--api_model", default="gpt-4o", type=str, help="api model name")
     parser.add_argument("--max_attached_imgs", type=int, default=1)
     args = parser.parse_args()
 
@@ -157,5 +163,8 @@ def main():
                 pass
         if web_task_res:
             print(web_task_res)
+            accuracy = calculate_accuracy(web_task_res)
+            print(f"{web} - Accuracy: {accuracy:.2%} ({sum(web_task_res)}/{len(web_task_res)})")
+
 if __name__ == '__main__':
     main()

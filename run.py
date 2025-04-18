@@ -462,15 +462,16 @@ def main():
         today_date = datetime.today().strftime('%Y-%m-%d')
         init_msg = f"""Today is {today_date}. Now given a task: {task['ques']}  Please interact with https://www.example.com and get the answer. \n"""
         init_msg = init_msg.replace('https://www.example.com', task['web'])
-        init_msg += f"""Refer to the provided manuals and QA pairs, and take necessary steps and methods to complete the task."""
-        init_msg += f"""\n
-[Key Guidelines You MUST follow]
-Before taking any action, analyze the provided Manuals and QA pairs as a whole to determine if they contain useful procedures, constraints, or guidelines relevant to this task.
- - If they provide comprehensive guidance, strictly follow their instructions in an ordered and structured manner.
+        init_msg += f"""Before taking action, carefully analyze the contents in [Manuals and QA pairs] below.
+Determine whether [Manuals and QA pairs] contain relevant procedures, constraints, or guidelines that should be followed for this task.
+If so, follow their guidance accordingly. If not, proceed with a logical and complete approach."""
+
+        init_msg += f"""\n[Key Guidelines You MUST follow]
+ - If [Manuals and QA pairs] provide comprehensive guidance, strictly follow their instructions in an ordered and structured manner.
  - If they contain partial but useful information, integrate it into your approach while filling in the gaps logically.
  - If they are entirely irrelevant or insufficient, proceed with the best available method while ensuring completeness.
 [Manuals and QA pairs]:
-{manual}"""
+{manual}\n"""
         init_msg = init_msg + obs_prompt
 
         it = 0
