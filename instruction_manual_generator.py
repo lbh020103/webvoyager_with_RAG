@@ -190,13 +190,21 @@ Please output the results in the following JSON format:
 
     def generate_instruction_manual(self) -> str:
         """
-        Generate an instruction manual by filtering relevant results based on the task goal.
+        Generates a structured instruction manual by filtering relevant information from the retrieval results
+        based on the defined task goal.
 
-        This method generates an instruction manual by extracting JSON data from the OpenAI API response,
-        and concatenates each entry's title, description, and source in order to form a string.
+        This method works by:
+        1. Generating a prompt using the task goal and retrieved content.
+        2. Sending the prompt to the OpenAI API to obtain a filtered and formatted response.
+        3. Parsing the response based on the selected output format:
+           - If output_format is "json", the response will be parsed and transformed into a readable manual string.
+           - Otherwise, the response will be returned as-is (typically as a plain-text manual).
 
         Returns:
-            str: A string containing the manual, with each entry's title, description, and source.
+            str: A formatted string containing either:
+                - A plain-text instruction manual (if output_format is not "json"), or
+                - A structured list of step-by-step instructions (parsed from JSON),
+                  each including the title, description, and source of relevant entries.
         """
         prompt = self._generate_prompt()
         response_text = self._call_openai(prompt)
