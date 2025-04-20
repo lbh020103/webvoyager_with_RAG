@@ -19,7 +19,7 @@ from utils import get_web_element_rect, encode_image, extract_information, print
     clip_message_and_obs_text_only
 from pdf_rag import PDFEnhancementPipeline
 from instruction_manual_generator import InstructionManualGenerator
-from typing import List, Dict, Optional, Tuple, Any, Union, Protocol, Set
+from typing import List, Dict, Optional, Any, Literal
 from datetime import datetime
 
 
@@ -36,6 +36,8 @@ def setup_logger(folder_path):
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
+
+    return logger
 
 
 def driver_config(args):
@@ -57,6 +59,8 @@ def driver_config(args):
             "plugins.always_open_pdf_externally": True
         }
     )
+
+    options.add_argument("disable-blink-features=AutomationControlled")
     return options
 
 
@@ -245,20 +249,20 @@ def index_pdf(
         pdf_path: str,
         output_dir: str,
         api_key: str,
-        org_id: str,
-        logger,
-        persist_directory: str = "./chroma_db"
+        logger: logging.Logger,
+        persist_directory: str = "./chroma_db",
+        org_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Indexes a PDF and converts it to Markdown.
 
     Args:
-        pdf_path: Path to the PDF file.
-        output_dir: Output directory.
-        api_key: OpenAI API key.
-        org_id: OpenAI organization ID.
-        logger: Logger instance.
-        persist_directory: Directory for storing the index.
+        pdf_path (str): Path to the PDF file.
+        output_dir (str): Directory to store output Markdown and image files.
+        api_key (str): OpenAI API key for embedding or generation.
+        logger (logging.Logger): Logger instance.
+        persist_directory (str, optional): Directory to store the embedding index. Defaults to "./chroma_db".
+        org_id (Optional[str], optional): OpenAI organization ID. Defaults to None.
 
     Returns:
         Dict[str, Any]: Contains information about the original PDF, Markdown file, image count, etc.
@@ -294,24 +298,27 @@ def index_pdf(
 def search_rag(
         query: str,
         api_key: str,
-        org_id: str,
-        logger,
+        logger: logging.Logger,
         persist_directory: str = "./chroma_db",
-        k: int = 20
+        k: int = 20,
+        org_id: Optional[str] = None
 ) -> List[Dict]:
     """
     Performs a search on the indexed data.
 
     Args:
-        query: User query.
-        api_key: OpenAI API key.
-        org_id: OpenAI organization ID.
-        logger: Logger instance.
-        persist_directory: Directory where the index is stored.
+        query (str): User query.
+        api_key (str): OpenAI API key.
+        logger (logging.Logger): Logger instance.
+        persist_directory (str, optional): Path to the directory where the index is stored. Defaults to "./chroma_db".
         k: Number of results to return.
+        org_id (Optional[str], optional): OpenAI organization ID. Defaults to None.
 
     Returns:
-        List[Dict]: A list of dictionaries containing search results.
+        List[Dict]: A list of dictionaries representing search results, each containing:
+            - section (str): The section title or identifier.
+            - content (str): Relevant textual content.
+            - source (str): Source reference filename.
     """
     # Initialize the pipeline
     pipeline = PDFEnhancementPipeline(
@@ -335,30 +342,38 @@ def search_rag(
 
 def generate_instruction_manual(
         api_key: str,
-        org_id: str,
         task_goal: str,
-        filtered_results: List[Dict]
+        filtered_results: List[Dict],
+        logger: logging.Logger,
+        instruction_format: Literal["text_steps", "json_blocks"],
+        org_id: Optional[str] = None,
+
 ) -> str:
     """
     Generates an instruction manual based on filtered results.
 
     Args:
-        api_key: OpenAI API key for authentication.
-        org_id: OpenAI organization ID.
-        task_goal: The goal of the task that the manual will help accomplish.
-        filtered_results: The processed or filtered results that will be included in the manual.
+        api_key (str): OpenAI API key.
+        task_goal (str): The goal of the task that the manual will help accomplish.
+        filtered_results (List[Dict]): The processed or filtered results that will be included in the manual.
+        logger (logging.Logger): Logger instance.
+        instruction_format (Literal["text_steps", "json_blocks"]):
+            - "text_steps": Outputs plain-text step-by-step instructions.
+            - "json_blocks": Outputs structured blocks in JSON-like format.
+        org_id (Optional[str], optional): OpenAI organization ID. Defaults to None.
 
     Returns:
-        str: A dictionary containing the instruction manual, including the API key,
-                        organization ID, task goal, and filtered results.
+        str: The generated instruction manual content in the specified format.
     """
 
     # Initialize the manual generator and generate the manual
     manual_generator = InstructionManualGenerator(
         openai_api_key=api_key,
-        openai_org_id=org_id,
         task_goal=task_goal,
-        results=filtered_results
+        results=filtered_results,
+        logger=logger,
+        instruction_format=instruction_format,
+        openai_org_id=org_id,
     )
 
     # Generate and return the manual
@@ -406,16 +421,18 @@ def main():
         for line in f:
             tasks.append(json.loads(line))
 
-
+    init_dir = os.path.join(result_dir, 'init')
+    os.makedirs(init_dir, exist_ok=True)
+    init_logger = setup_logger(init_dir)
     markdown_output_dir = "output"
-    index_pdf(pdf_path=args.pdf_path, output_dir=markdown_output_dir, api_key=args.api_key, org_id=args.api_organization_id,
-              logger=logging)
+    index_pdf(pdf_path=args.pdf_path, output_dir=markdown_output_dir, api_key=args.api_key,
+              logger=init_logger, org_id=args.api_organization_id)
 
     for task_id in range(len(tasks)):
         task = tasks[task_id]
         task_dir = os.path.join(result_dir, 'task{}'.format(task["id"]))
         os.makedirs(task_dir, exist_ok=True)
-        setup_logger(task_dir)
+        task_logger = setup_logger(task_dir)
         logging.info(f'########## TASK{task["id"]} ##########')
 
         driver_task = webdriver.Chrome(options=options)
@@ -453,20 +470,21 @@ def main():
             messages = [{'role': 'system', 'content': SYSTEM_PROMPT_TEXT_ONLY}]
             obs_prompt = "Observation: please analyze the accessibility tree and give the Thought and Action."
 
-        rag_results = search_rag(query=task['ques'], api_key=args.api_key, org_id=args.api_organization_id,
-                                 logger=logging)
-        manual = generate_instruction_manual(api_key=args.api_key, org_id=args.api_organization_id,
-                                             task_goal=task['ques'], filtered_results=rag_results)
+        rag_results = search_rag(query=task['ques'], api_key=args.api_key,
+                                 logger=task_logger, org_id=args.api_organization_id)
+        manual = generate_instruction_manual(api_key=args.api_key,
+                                             task_goal=task['ques'], filtered_results=rag_results, logger=task_logger,
+                                             instruction_format="text_steps", org_id=args.api_organization_id)
         logging.info(f"manual:\n {manual}")
 
         today_date = datetime.today().strftime('%Y-%m-%d')
         init_msg = f"""Today is {today_date}. Now given a task: {task['ques']}  Please interact with https://www.example.com and get the answer. \n"""
         init_msg = init_msg.replace('https://www.example.com', task['web'])
-        init_msg += f"""Before taking action, carefully analyze the contents in [Manuals and QA pairs] below.
+        init_msg += """Before taking action, carefully analyze the contents in [Manuals and QA pairs] below.
 Determine whether [Manuals and QA pairs] contain relevant procedures, constraints, or guidelines that should be followed for this task.
-If so, follow their guidance accordingly. If not, proceed with a logical and complete approach."""
+If so, follow their guidance accordingly. If not, proceed with a logical and complete approach.\n"""
 
-        init_msg += f"""\n[Key Guidelines You MUST follow]
+        init_msg += f"""[Key Guidelines You MUST follow]
  - If [Manuals and QA pairs] provide comprehensive guidance, strictly follow their instructions in an ordered and structured manner.
  - If they contain partial but useful information, integrate it into your approach while filling in the gaps logically.
  - If they are entirely irrelevant or insufficient, proceed with the best available method while ensuring completeness.

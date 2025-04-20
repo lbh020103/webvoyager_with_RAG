@@ -1,9 +1,9 @@
 from openai import OpenAI
 import json
 import os
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Literal
 from json.decoder import JSONDecodeError
-
+import logging
 
 class InstructionManualGenerator:
     def __init__(
@@ -11,8 +11,9 @@ class InstructionManualGenerator:
         openai_api_key: str,
         task_goal: str,
         results: List[Dict],
+        logger: logging.Logger,
+        instruction_format: Literal["text_steps", "json_blocks"] = "text_steps",
         openai_org_id: Optional[str] = None,
-        output_format: str = "string"
     ):
         """
         Initialize the instruction manual generator for WebVoyager tasks.
@@ -21,10 +22,11 @@ class InstructionManualGenerator:
             openai_api_key (str): OpenAI API key.
             task_goal (str): The task goal string (e.g., identifying the professor of a course).
             results (List[Dict]): A list of dictionaries containing retrieved results.
+            logger: Logging object
+            instruction_format (Literal["text_steps", "json_blocks"]): The desired output format for the manual.
+                - "text_steps": Generates a human-readable step-by-step manual.
+                - "json_blocks": Outputs a structured JSON manual with descriptions and sources.
             openai_org_id (Optional[str]): OpenAI organization ID.
-            output_format (str): Determines the output format of the generated instruction manual.
-                - "string": Outputs a plain-text, step-by-step instruction manual.
-                - "json": Outputs a structured JSON object containing relevant and irrelevant sections.
         """
         self.openai_client = OpenAI(
             api_key=openai_api_key,
@@ -32,7 +34,8 @@ class InstructionManualGenerator:
         )
         self.task_goal = task_goal
         self.results = results
-        self.output_format = output_format
+        self.instruction_format = instruction_format
+        self.logger = logger
 
     def _generate_prompt(self):
         """
@@ -106,7 +109,7 @@ Steps:
 Please reason step by step and ensure the manual is structured with clear, actionable steps tailored for a web browsing agent.
 """
 
-        if self.output_format == "json":
+        if self.instruction_format == "json_blocks":
             prompt = f"""
 You are a professional technical document assistant. Your task is to filter the relevant information from the provided retrieval results based on the given task goal and compile it into an instruction manual.
 
@@ -195,36 +198,53 @@ Please output the results in the following JSON format:
 
         This method works by:
         1. Generating a prompt using the task goal and retrieved content.
-        2. Sending the prompt to the OpenAI API to obtain a filtered and formatted response.
-        3. Parsing the response based on the selected output format:
-           - If output_format is "json", the response will be parsed and transformed into a readable manual string.
-           - Otherwise, the response will be returned as-is (typically as a plain-text manual).
+        2. Sending the prompt to the OpenAI API via `_call_openai()` to obtain a response.
+        3. Handling the response based on the selected `instruction_format` (default: "text_steps"):
+           - If `instruction_format` is "text_steps" (default), the method returns a free-form,
+             step-by-step instruction manual directly from the model response.
+           - If `instruction_format` is "json_blocks", the method parses the JSON response and converts each entry
+             (including title, description, and source) into a readable manual string.
 
         Returns:
-            str: A formatted string containing either:
-                - A plain-text instruction manual (if output_format is not "json"), or
-                - A structured list of step-by-step instructions (parsed from JSON),
-                  each including the title, description, and source of relevant entries.
+            str: A formatted instruction manual string, either as:
+                - A step-by-step plain-text guide (if `instruction_format` is "text_steps"), or
+                - A structured set of entries parsed from JSON, including title, description, and source (if `instruction_format` is "json_blocks").
         """
         prompt = self._generate_prompt()
         response_text = self._call_openai(prompt)
 
-        if self.output_format == "json":
-            response_text = response_text.replace("```json", "")
-            response_text = response_text.replace("```", "")
-            response = json.loads(response_text)
-            manual_obj = response["manual"]
+        if self.instruction_format == "json_blocks":
+            try:
+                response_text = response_text.replace("```json", "").replace("```", "")
+                response = json.loads(response_text)
+                manual_obj = response["manual"]
 
-            manual_str = ""
-            for entry in manual_obj:
-                manual_str += f"title: {entry['title']}\ndescription: {entry['description']}\nsource: {entry['source']}\n\n"
-            return manual_str
+                manual_str = "\n\n".join(
+                    f"title: {entry['title']}\ndescription: {entry['description']}\nsource: {entry['source']}"
+                    for entry in manual_obj
+                )
+                return manual_str
+
+            except JSONDecodeError as e:
+                self.logger.warning(f"[JSONDecodeError] Failed to parse response: {e}")
+            except (KeyError, TypeError) as e:
+                self.logger.warning(f"[FormatError] Missing expected fields in JSON response: {e}")
+
+            return ""
+
         else:
             return response_text
 
 
 # Example Usage
 if __name__ == "__main__":
+
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
+
     # Get API key from environment variable
     api_key = os.getenv("OPENAI_API_KEY")
     org_id = os.getenv("OPENAI_ORG_ID")
@@ -245,7 +265,8 @@ if __name__ == "__main__":
         openai_api_key=api_key,
         openai_org_id=org_id,
         task_goal=task_goal,
-        results=results
+        results=results,
+        logger=logger
     )
     manual = manual_generator.generate_instruction_manual()
 
