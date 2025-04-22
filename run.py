@@ -485,10 +485,11 @@ Determine whether [Manuals and QA pairs] contain relevant procedures, constraint
 If so, follow their guidance accordingly. If not, proceed with a logical and complete approach.\n"""
 
         init_msg += f"""[Key Guidelines You MUST follow]
+Before taking any action, analyze the provided [Manuals and QA pairs] as a whole to determine if they contain useful procedures, constraints, or guidelines relevant to this task.
  - If [Manuals and QA pairs] provide comprehensive guidance, strictly follow their instructions in an ordered and structured manner.
- - If they contain partial but useful information, integrate it into your approach while filling in the gaps logically.
- - If they are entirely irrelevant or insufficient, proceed with the best available method while ensuring completeness.
-[Manuals and QA pairs]:
+ - If [Manuals and QA pairs] contain partial but useful information, integrate it into your approach while filling in the gaps logically.
+ - If [Manuals and QA pairs] are entirely irrelevant or insufficient, proceed with the best available method while ensuring completeness.\n
+[Manuals and QA pairs]
 {manual}\n"""
         init_msg = init_msg + obs_prompt
 
