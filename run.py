@@ -6,14 +6,16 @@ import re
 import os
 import shutil
 import logging
+import base64
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 
-from prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_TEXT_ONLY
-from openai import OpenAI
+from prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_TEXT_ONLY  # Keep your existing prompts
+from google import genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from utils import get_web_element_rect, encode_image, extract_information, print_message, \
     get_webarena_accessibility_tree, get_pdf_retrieval_ans_from_assistant, clip_message_and_obs, \
     clip_message_and_obs_text_only
@@ -64,111 +66,236 @@ def driver_config(args):
     return options
 
 
-def format_msg(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text):
+def format_msg_for_gemini(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text):
+    """Format messages for Gemini API"""
     if it == 1:
         init_msg += f"I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"
-        init_msg_format = {
-            'role': 'user',
-            'content': [
-                {'type': 'text', 'text': init_msg},
+        
+        # Add reminder about following instructions
+        init_msg += "\n\nREMINDER: Follow the step-by-step instructions in the manual above. Indicate which step you are following with each action."
+        
+        gemini_msg = {
+            'contents': [
+                {'role': 'user', 
+                 'parts': [
+                    {'text': init_msg},
+                    {'inline_data': {'mime_type': 'image/jpeg', 'data': web_img_b64}}
+                 ]
+                }
             ]
         }
-        init_msg_format['content'].append({"type": "image_url",
-                                           "image_url": {"url": f"data:image/png;base64,{web_img_b64}"}})
-        return init_msg_format
+        return gemini_msg
     else:
-        if not pdf_obs:
-            curr_msg = {
-                'role': 'user',
-                'content': [
-                    {'type': 'text',
-                     'text': f"Observation:{warn_obs} please analyze the attached screenshot and give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"},
-                    {
-                        'type': 'image_url',
-                        'image_url': {"url": f"data:image/png;base64,{web_img_b64}"}
-                    }
-                ]
-            }
+        # Extract the manual from init_msg to include in subsequent messages
+        manual_start = init_msg.find("[Manuals and QA pairs]\n")
+        manual_end = init_msg.find("\n\nIMPORTANT:")
+        
+        if manual_start != -1 and manual_end != -1:
+            manual_text = init_msg[manual_start:manual_end]
         else:
-            curr_msg = {
-                'role': 'user',
-                'content': [
-                    {'type': 'text',
-                     'text': f"Observation: {pdf_obs} Please analyze the response given by Assistant, then consider whether to continue iterating or not. The screenshot of the current page is also attached, give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"},
-                    {
-                        'type': 'image_url',
-                        'image_url': {"url": f"data:image/png;base64,{web_img_b64}"}
-                    }
-                ]
-            }
-        return curr_msg
-
-
-def format_msg_text_only(it, init_msg, pdf_obs, warn_obs, ac_tree):
-    if it == 1:
-        init_msg_format = {
-            'role': 'user',
-            'content': init_msg + '\n' + ac_tree
+            manual_text = "[Manuals and QA pairs] (Not found in initial message)"
+        
+        if not pdf_obs:
+            msg_text = f"Observation:{warn_obs} please analyze the attached screenshot and give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"
+            
+            # Add the manual and reminder
+            msg_text += f"\n\n{manual_text}\n\nREMINDER: Continue following the step-by-step instructions in the manual above. Indicate which step you are following with each action."
+            
+            # Add dropdown menu reminder if this is iteration 3 or more (likely struggling with dropdowns)
+            if it >= 3:
+                msg_text += "\n\nDROPDOWN MENU TIPS: If you're having trouble with dropdown menus, try these approaches:\n1. Click the dropdown again to fully expand it\n2. Look for the option as a separate element with its own number\n3. If the option isn't visible as a separate element, try clicking where the text of the option would be within the dropdown\n4. Try a different approach to achieve the same goal"
+            
+            # Add date input reminder if the agent is likely working with dates
+            if any(date_term in web_text.lower() for date_term in ["date", "year", "month", "day", "from", "to", "2024"]):
+                msg_text += "\n\nDATE INPUT TIPS: For date inputs, try these approaches:\n1. If there are separate fields for year, month, day, fill them one by one\n2. If there's a single field, try the format YYYY-MM-DD (e.g., 2024-01-01)\n3. After entering a date, check if the page automatically submits the form - if so, you'll need to go back and complete all fields before submitting\n4. If the date picker is complex, look for text input alternatives"
+        else:
+            msg_text = f"Observation: {pdf_obs} Please analyze the response given by Assistant, then consider whether to continue iterating or not. The screenshot of the current page is also attached, give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"
+            
+            # Add the manual and reminder
+            msg_text += f"\n\n{manual_text}\n\nREMINDER: Continue following the step-by-step instructions in the manual above. Indicate which step you are following with each action."
+        
+        gemini_msg = {
+            'contents': [
+                {'role': 'user',
+                 'parts': [
+                    {'text': msg_text},
+                    {'inline_data': {'mime_type': 'image/jpeg', 'data': web_img_b64}}
+                 ]
+                }
+            ]
         }
-        return init_msg_format
+        return gemini_msg
+
+
+def format_msg_text_only_for_gemini(it, init_msg, pdf_obs, warn_obs, ac_tree):
+    """Format text-only messages for Gemini API"""
+    if it == 1:
+        # Add reminder about following instructions
+        init_msg += "\n\nREMINDER: Follow the step-by-step instructions in the manual above. Indicate which step you are following with each action."
+        
+        gemini_msg = {
+            'contents': [
+                {'role': 'user',
+                 'parts': [
+                    {'text': init_msg + '\n' + ac_tree}
+                 ]
+                }
+            ]
+        }
+        return gemini_msg
     else:
-        if not pdf_obs:
-            curr_msg = {
-                'role': 'user',
-                'content': f"Observation:{warn_obs} please analyze the accessibility tree and give the Thought and Action.\n{ac_tree}"
-            }
+        # Extract the manual from init_msg to include in subsequent messages
+        manual_start = init_msg.find("[Manuals and QA pairs]\n")
+        manual_end = init_msg.find("\n\nIMPORTANT:")
+        
+        if manual_start != -1 and manual_end != -1:
+            manual_text = init_msg[manual_start:manual_end]
         else:
-            curr_msg = {
-                'role': 'user',
-                'content': f"Observation: {pdf_obs} Please analyze the response given by Assistant, then consider whether to continue iterating or not. The accessibility tree of the current page is also given, give the Thought and Action.\n{ac_tree}"
-            }
-        return curr_msg
+            manual_text = "[Manuals and QA pairs] (Not found in initial message)"
+        
+        if not pdf_obs:
+            msg_text = f"Observation:{warn_obs} please analyze the accessibility tree and give the Thought and Action.\n{ac_tree}"
+            
+            # Add the manual and reminder
+            msg_text += f"\n\n{manual_text}\n\nREMINDER: Continue following the step-by-step instructions in the manual above. Indicate which step you are following with each action."
+            
+            # Add dropdown menu reminder if this is iteration 3 or more (likely struggling with dropdowns)
+            if it >= 3:
+                msg_text += "\n\nDROPDOWN MENU TIPS: If you're having trouble with dropdown menus, try these approaches:\n1. Click the dropdown again to fully expand it\n2. Look for the option as a separate element with its own number\n3. If the option isn't visible as a separate element, try clicking where the text of the option would be within the dropdown\n4. Try a different approach to achieve the same goal"
+            
+            # Add date input reminder if the agent is likely working with dates
+            if any(date_term in ac_tree.lower() for date_term in ["date", "year", "month", "day", "from", "to", "2024"]):
+                msg_text += "\n\nDATE INPUT TIPS: For date inputs, try these approaches:\n1. If there are separate fields for year, month, day, fill them one by one\n2. If there's a single field, try the format YYYY-MM-DD (e.g., 2024-01-01)\n3. After entering a date, check if the page automatically submits the form - if so, you'll need to go back and complete all fields before submitting\n4. If the date picker is complex, look for text input alternatives"
+        else:
+            msg_text = f"Observation: {pdf_obs} Please analyze the response given by Assistant, then consider whether to continue iterating or not. The accessibility tree of the current page is also given, give the Thought and Action.\n{ac_tree}"
+            
+            # Add the manual and reminder
+            msg_text += f"\n\n{manual_text}\n\nREMINDER: Continue following the step-by-step instructions in the manual above. Indicate which step you are following with each action."
+        
+        gemini_msg = {
+            'contents': [
+                {'role': 'user',
+                 'parts': [
+                    {'text': msg_text}
+                 ]
+                }
+            ]
+        }
+        return gemini_msg
 
 
-def call_gpt4v_api(args, openai_client, messages):
+def call_gemini_api(args, gemini_client, messages, conversation_history=None):
+    """Call the Gemini API with proper error handling"""
     retry_times = 0
     while True:
         try:
-            if not args.text_only:
-                logging.info('Calling gpt4v API...')
-                openai_response = openai_client.chat.completions.create(
-                    model=args.api_model, messages=messages, max_tokens=1000, seed=args.seed
+            logging.info('Calling Gemini API...')
+            
+            # Extract parts from the message format
+            user_message = messages['contents'][0]
+            
+            # Add system prompt if needed
+            system_instructions = SYSTEM_PROMPT if not args.text_only else SYSTEM_PROMPT_TEXT_ONLY
+            
+            # Add emphasis to the manual following part of the system instructions
+            system_instructions = system_instructions.replace(
+                "* Manual Following Guidelines *",
+                "*** CRITICAL: MANUAL FOLLOWING GUIDELINES ***"
+            )
+            
+            # Initialize or continue conversation
+            if conversation_history is None:
+                # Create a new conversation with system instructions as part of the first user message
+                first_message = {
+                    "role": "user",
+                    "parts": []
+                }
+                
+                # Add system instructions and user text
+                first_message["parts"].append({
+                    "text": f"{system_instructions}\n\n{user_message['parts'][0]['text']}"
+                })
+                
+                # Add image if present
+                if len(user_message['parts']) > 1 and 'inline_data' in user_message['parts'][1]:
+                    image_data = user_message['parts'][1]['inline_data']
+                    first_message["parts"].append({
+                        "inline_data": {
+                            "mime_type": image_data['mime_type'],
+                            "data": image_data['data']
+                        }
+                    })
+                
+                # Create a chat session
+                response = gemini_client.models.generate_content(
+                    model="gemini-2.5-pro-preview-03-25",
+                    contents=[first_message]
                 )
+                conversation = {"history": [first_message, {"role": "model", "parts": [{"text": response.text}]}]}
             else:
-                logging.info('Calling gpt4 API...')
-                openai_response = openai_client.chat.completions.create(
-                    model=args.api_model, messages=messages, max_tokens=1000, seed=args.seed, timeout=30
-                )
-
-            prompt_tokens = openai_response.usage.prompt_tokens
-            completion_tokens = openai_response.usage.completion_tokens
-
-            logging.info(f'Prompt Tokens: {prompt_tokens}; Completion Tokens: {completion_tokens}')
-
+                conversation = conversation_history
+            
+            # Format the current message for sending
+            current_message = {
+                "role": "user",
+                "parts": []
+            }
+            
+            for part in user_message['parts']:
+                if 'text' in part:
+                    # a simple text part
+                    current_message["parts"].append({"text": part['text']})
+                elif 'inline_data' in part:
+                    # a valid PartDict
+                    current_message["parts"].append({
+                        "inline_data": {
+                            "mime_type": part['inline_data']['mime_type'],
+                            "data": part['inline_data']['data']
+                        }
+                    })
+            
+            # Add the current message to the conversation history
+            conversation["history"].append(current_message)
+            
+            # Send the message to the model
+            response = gemini_client.models.generate_content(
+                model="gemini-2.5-pro-preview-03-25",
+                contents=conversation["history"]
+            )
+            
+            # Add the model's response to the conversation history
+            conversation["history"].append({"role": "model", "parts": [{"text": response.text}]})
+            
+            # Estimate token usage (since Gemini doesn't provide this directly)
+            # This is a rough estimate based on word count - adjust as needed
+            message_text = ' '.join([part.get('text', '') for part in user_message['parts'] if 'text' in part])
+            prompt_tokens = len(message_text.split()) * 1.3  # Rough approximation
+            completion_tokens = len(response.text.split()) * 1.3  # Rough approximation
+            
+            logging.info(f'Estimated Prompt Tokens: {int(prompt_tokens)}; Estimated Completion Tokens: {int(completion_tokens)}')
+            
             gpt_call_error = False
-            return prompt_tokens, completion_tokens, gpt_call_error, openai_response
+            return int(prompt_tokens), int(completion_tokens), gpt_call_error, response, conversation
 
         except Exception as e:
             logging.info(f'Error occurred, retrying. Error type: {type(e).__name__}')
-
-            if type(e).__name__ == 'RateLimitError':
+            logging.info(f'Error details: {str(e)}')
+            
+            # Handle specific error types
+            if "rate limit" in str(e).lower():
                 time.sleep(10)
-
-            elif type(e).__name__ == 'APIError':
+            elif "server error" in str(e).lower():
                 time.sleep(15)
-
-            elif type(e).__name__ == 'InvalidRequestError':
+            elif "invalid request" in str(e).lower():
                 gpt_call_error = True
-                return None, None, gpt_call_error, None
-
+                return None, None, gpt_call_error, None, None
             else:
-                gpt_call_error = True
-                return None, None, gpt_call_error, None
-
-        retry_times += 1
-        if retry_times == 10:
-            logging.info('Retrying too many times')
-            return None, None, True, None
+                time.sleep(5)
+                
+            retry_times += 1
+            if retry_times == 10:
+                logging.info('Retrying too many times')
+                return None, None, True, None, None
 
 
 def exec_action_click(info, web_ele, driver_task):
@@ -245,6 +372,37 @@ def exec_action_scroll(info, web_eles, driver_task, args, obs_info):
     time.sleep(3)
 
 
+def get_pdf_retrieval_ans_from_gemini(gemini_client, pdf_path, query):
+    """Use Gemini to extract information from PDF instead of OpenAI"""
+    try:
+        with open(pdf_path, "rb") as file:
+            pdf_data = file.read()
+            pdf_base64 = base64.b64encode(pdf_data).decode('utf-8')
+        
+        # Create prompt for PDF analysis
+        prompt = f"""Please analyze this PDF and answer the following query:
+        
+        {query}
+        
+        Provide a detailed and accurate answer based solely on the PDF content."""
+        
+        # Configure and call Gemini with PDF content
+        response = gemini_client.models.generate_content(
+            model='gemini-2.5-pro-preview-03-25',
+            contents=[
+                {"role": "user", "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": "application/pdf", "data": pdf_base64}}
+                ]}
+            ]
+        )
+        
+        return response.text
+    except Exception as e:
+        logging.error(f"Error in PDF analysis: {str(e)}")
+        return f"Error analyzing PDF: {str(e)}"
+
+
 def index_pdf(
         pdf_path: str,
         output_dir: str,
@@ -255,24 +413,11 @@ def index_pdf(
 ) -> Dict[str, Any]:
     """
     Indexes a PDF and converts it to Markdown.
-
-    Args:
-        pdf_path (str): Path to the PDF file.
-        output_dir (str): Directory to store output Markdown and image files.
-        api_key (str): OpenAI API key for embedding or generation.
-        logger (logging.Logger): Logger instance.
-        persist_directory (str, optional): Directory to store the embedding index. Defaults to "./chroma_db".
-        org_id (Optional[str], optional): OpenAI organization ID. Defaults to None.
-
-    Returns:
-        Dict[str, Any]: Contains information about the original PDF, Markdown file, image count, etc.
     """
     # Initialize the pipeline
     pipeline = PDFEnhancementPipeline(
-        openai_api_key=api_key,
+        gemini_api_key=api_key,
         logger=logger,
-        embedding_type="openai",
-        openai_org_id=org_id,
         persist_directory=persist_directory
     )
 
@@ -305,89 +450,109 @@ def search_rag(
 ) -> List[Dict]:
     """
     Performs a search on the indexed data.
-
-    Args:
-        query (str): User query.
-        api_key (str): OpenAI API key.
-        logger (logging.Logger): Logger instance.
-        persist_directory (str, optional): Path to the directory where the index is stored. Defaults to "./chroma_db".
-        k: Number of results to return.
-        org_id (Optional[str], optional): OpenAI organization ID. Defaults to None.
-
-    Returns:
-        List[Dict]: A list of dictionaries representing search results, each containing:
-            - section (str): The section title or identifier.
-            - content (str): Relevant textual content.
-            - source (str): Source reference filename.
     """
     # Initialize the pipeline
     pipeline = PDFEnhancementPipeline(
-        openai_api_key=api_key,
+        gemini_api_key=api_key,
         logger=logger,
-        embedding_type="openai",
-        openai_org_id=org_id,
         persist_directory=persist_directory
     )
 
     logger.info(f"Searching for: {query}")
     results = pipeline.search(query=query, k=k)
-    filtered_results = [{k: d[k] for k in ["section", "content", "source"] if k in d} for d in results]
+    
+    # Process the results to ensure they have consistent keys
+    filtered_results = []
+    for d in results:
+        # Create a standardized result entry with proper fallbacks
+        entry = {
+            "content": d.get("page_content", d.get("content", "No content available")),
+            "source": d.get("source", "Unknown"),
+            "section": d.get("section", "N/A"),
+            "page": d.get("page", "N/A")
+        }
+        filtered_results.append(entry)
+    
+    # Format results for logging
     results_str = ""
     for entry in filtered_results:
-        results_str += f"section: {entry['section']}\ncontent: {entry['content']}\nsource: {entry['source']}\n\n"
+        results_str += f"section: {entry.get('section', 'N/A')}\ncontent: {entry.get('content', 'No content available')}\nsource: {entry.get('source', 'Unknown')}\n\n"
+    
     logger.info(f"Searching results:\n {results_str}")
-
     return filtered_results
 
 
-def generate_instruction_manual(
-        api_key: str,
+def generate_instruction_manual_with_gemini(
+        gemini_client,
         task_goal: str,
         filtered_results: List[Dict],
         logger: logging.Logger,
-        instruction_format: Literal["text_steps", "json_blocks"],
-        org_id: Optional[str] = None,
-
 ) -> str:
     """
-    Generates an instruction manual based on filtered results.
-
-    Args:
-        api_key (str): OpenAI API key.
-        task_goal (str): The goal of the task that the manual will help accomplish.
-        filtered_results (List[Dict]): The processed or filtered results that will be included in the manual.
-        logger (logging.Logger): Logger instance.
-        instruction_format (Literal["text_steps", "json_blocks"]):
-            - "text_steps": Outputs plain-text step-by-step instructions.
-            - "json_blocks": Outputs structured blocks in JSON-like format.
-        org_id (Optional[str], optional): OpenAI organization ID. Defaults to None.
-
-    Returns:
-        str: The generated instruction manual content in the specified format.
+    Generates an instruction manual using Gemini API based on filtered results.
     """
+    # Create a prompt for the instruction manual generation
+    context_text = "\n\n".join([
+        f"Section: {result.get('section', 'N/A')}\nContent: {result.get('content', '')}"
+        for result in filtered_results
+    ])
+    
+    prompt = f"""Task Goal: {task_goal}
 
-    # Initialize the manual generator and generate the manual
-    manual_generator = InstructionManualGenerator(
-        openai_api_key=api_key,
-        task_goal=task_goal,
-        results=filtered_results,
-        logger=logger,
-        instruction_format=instruction_format,
-        openai_org_id=org_id,
-    )
+Context Information:
+{context_text}
 
-    # Generate and return the manual
-    manual = manual_generator.generate_instruction_manual()
-    return manual
+Please create a comprehensive, step-by-step instruction manual for achieving the task goal.
+The manual should:
+1. Be well-structured with clear, numbered steps (Step 1, Step 2, etc.)
+2. Incorporate all relevant information from the context provided
+3. Be concise yet thorough
+4. Include any necessary cautions or best practices
+5. Focus on EXACTLY how to accomplish the task with the website mentioned in the task goal
+
+IMPORTANT FORMATTING REQUIREMENTS:
+- Format each step as "Step X: [Clear action instruction]"
+- Make each step a single, clear action that can be followed
+- Include visual cues like "Look for a button labeled X" or "Find the dropdown menu"
+- For UI interactions, be EXTREMELY specific about what to click, what to type, and in what order
+
+DROPDOWN MENU INTERACTION INSTRUCTIONS:
+- For dropdown menus, be extremely specific about how to interact with them
+- First specify clicking on the dropdown to open it
+- Then in a SEPARATE step, specify clicking on the specific option you want to select
+- If the dropdown options are not visible as separate elements, provide instructions to try clicking on the visible text of the option within the dropdown element
+- If the dropdown is still not working, suggest alternative approaches like using Tab key to navigate to the option
+
+Your instruction manual should be so clear that anyone could follow it without additional guidance.
+"""
+
+    try:
+        # Generate the instruction manual using Gemini
+        response = gemini_client.models.generate_content(
+            model='gemini-2.5-pro-preview-03-25',
+            contents=[{"role": "user", "parts": [{"text": prompt}]}]
+        )
+        
+        # Add a header to make the instructions more prominent
+        manual = "## STEP-BY-STEP INSTRUCTIONS\n\n" + response.text
+        
+        # Add a footer with a reminder about dropdown menus
+        manual += "\n\n## IMPORTANT REMINDER\nFollow the steps above IN ORDER. Do not skip steps or create your own approach. For each UI interaction:\n1. First identify the exact element to interact with\n2. Then perform the action (click, type, etc.)\n3. Confirm the result before moving to the next step\n\nFor dropdown menus:\n- First click on the dropdown to open it\n- Then look for the option you need to select as a separate element\n- If the option is not visible as a separate element, try clicking on the text of the option within the dropdown element"
+        
+        return manual
+    except Exception as e:
+        logger.error(f"Error generating instruction manual: {str(e)}")
+        return f"Error generating manual: {str(e)}"
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--test_file', type=str, default='data/test.json')
-    parser.add_argument('--max_iter', type=int, default=5)
-    parser.add_argument("--api_key", default="key", type=str, help="YOUR_OPENAI_API_KEY")
+    parser.add_argument('--max_iter', type=int, default=25)
+    parser.add_argument("--api_key", default="key", type=str, help="YOUR_GOOGLE_API_KEY")
+    parser.add_argument("--openai_api_key", default=None, type=str, help="YOUR_OPENAI_API_KEY (for PDF indexing)")
     parser.add_argument("--api_organization_id", default=None, type=str, help="YOUR_OPENAI_ORGANIZATION_ID")
-    parser.add_argument("--api_model", default="gpt-4-vision-preview", type=str, help="api model name")
+    parser.add_argument("--api_model", default="gemini-1.5-pro-latest", type=str, help="Gemini model name")
     parser.add_argument("--output_dir", type=str, default='results')
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--max_attached_imgs", type=int, default=1)
@@ -405,8 +570,8 @@ def main():
     parser.add_argument("--pdf_path", type=str, default='data/arXiv.pdf')
     args = parser.parse_args()
 
-    # OpenAI client
-    client = OpenAI(api_key=args.api_key, organization=args.api_organization_id)
+    # Configure Google Generative AI
+    genai_client = genai.Client(api_key=args.api_key)
 
     options = driver_config(args)
 
@@ -425,7 +590,16 @@ def main():
     os.makedirs(init_dir, exist_ok=True)
     init_logger = setup_logger(init_dir)
     markdown_output_dir = "output"
-    index_pdf(pdf_path=args.pdf_path, output_dir=markdown_output_dir, api_key=args.api_key,
+    
+    # For PDF indexing, we might still need OpenAI temporarily
+    # (or adapt PDFEnhancementPipeline to use Gemini)
+    if args.openai_api_key:
+        openai_key = args.openai_api_key
+    else:
+        # Fallback to using the same key for everything
+        openai_key = args.api_key
+    
+    index_pdf(pdf_path=args.pdf_path, output_dir=markdown_output_dir, api_key=openai_key,
               logger=init_logger, org_id=args.api_organization_id)
 
     for task_id in range(len(tasks)):
@@ -464,33 +638,69 @@ def main():
         warn_obs = ""  # Type warning
         pattern = r'Thought:|Action:|Observation:'
 
-        messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
+        # No need to maintain messages list in the OpenAI format
+        # Instead, we'll use Gemini's conversation
+        conversation = None
+        
         obs_prompt = "Observation: please analyze the attached screenshot and give the Thought and Action. "
         if args.text_only:
-            messages = [{'role': 'system', 'content': SYSTEM_PROMPT_TEXT_ONLY}]
             obs_prompt = "Observation: please analyze the accessibility tree and give the Thought and Action."
 
-        rag_results = search_rag(query=task['ques'], api_key=args.api_key,
-                                 logger=task_logger, org_id=args.api_organization_id)
-        manual = generate_instruction_manual(api_key=args.api_key,
-                                             task_goal=task['ques'], filtered_results=rag_results, logger=task_logger,
-                                             instruction_format="text_steps", org_id=args.api_organization_id)
+        # Search RAG and generate manual using either OpenAI (temporary) or Gemini
+        rag_results = search_rag(query=task['ques'], api_key=openai_key,
+                               logger=task_logger, org_id=args.api_organization_id)
+        
+        # Use Gemini for manual generation
+        manual = generate_instruction_manual_with_gemini(
+            gemini_client=genai_client,
+            task_goal=task['ques'], 
+            filtered_results=rag_results, 
+            logger=task_logger
+        )
+        
         logging.info(f"manual:\n {manual}")
 
         today_date = datetime.today().strftime('%Y-%m-%d')
         init_msg = f"""Today is {today_date}. Now given a task: {task['ques']}  Please interact with https://www.example.com and get the answer. \n"""
         init_msg = init_msg.replace('https://www.example.com', task['web'])
         init_msg += """Before taking action, carefully analyze the contents in [Manuals and QA pairs] below.
-Determine whether [Manuals and QA pairs] contain relevant procedures, constraints, or guidelines that should be followed for this task.
-If so, follow their guidance accordingly. If not, proceed with a logical and complete approach.\n"""
+        Determine whether [Manuals and QA pairs] contain relevant procedures, constraints, or guidelines that should be followed for this task.
+        If so, follow their guidance accordingly. If not, proceed with a logical and complete approach.\n"""
 
         init_msg += f"""[Key Guidelines You MUST follow]
-Before taking any action, analyze the provided [Manuals and QA pairs] as a whole to determine if they contain useful procedures, constraints, or guidelines relevant to this task.
- - If [Manuals and QA pairs] provide comprehensive guidance, strictly follow their instructions in an ordered and structured manner.
- - If [Manuals and QA pairs] contain partial but useful information, integrate it into your approach while filling in the gaps logically.
- - If [Manuals and QA pairs] are entirely irrelevant or insufficient, proceed with the best available method while ensuring completeness.\n
-[Manuals and QA pairs]
-{manual}\n"""
+        Before taking any action, analyze the provided [Manuals and QA pairs] as a whole to determine if they contain useful procedures, constraints, 
+        or guidelines relevant to this task.
+        - If [Manuals and QA pairs] provide comprehensive guidance, strictly follow their instructions in an ordered and structured manner.
+        - If [Manuals and QA pairs] contain partial but useful information, integrate it into your approach while filling in the gaps logically.
+        - If [Manuals and QA pairs] are entirely irrelevant or insufficient, proceed with the best available method while ensuring completeness.\n
+        [Manuals and QA pairs]
+        {manual}\n"""
+
+        # Add stronger emphasis on following the instructions step by step
+        init_msg += """
+        IMPORTANT: You MUST follow the step-by-step instructions provided in the manual above. 
+        Do not skip steps or create your own approach unless absolutely necessary.
+        For each step you take, explicitly mention which step from the manual you are following.
+        If the manual contains numbered steps, follow them in order from Step 1 to completion.
+
+        SPECIFIC UI INTERACTION GUIDELINES:
+        1. For dropdown menus: 
+        - First click on the dropdown to open it
+        - In the next step, look for the option as a separate element with its own numerical label
+        - If the option doesn't appear as a separate element, try clicking on the dropdown again
+        - If that doesn't work, try to locate the text of the option within the dropdown element and click there
+        - As a last resort, try using keyboard navigation (Tab key) to navigate to the option
+
+        2. For date inputs: Be precise about where to click and what format to use.
+        3. For search fields: Type the exact search terms specified in the manual.
+        4. For navigation: Follow the exact path described in the manual.
+
+        TROUBLESHOOTING TIPS:
+        - If you're stuck on a dropdown menu, try clicking it multiple times or look for alternative ways to select the option
+        - If a UI element doesn't respond as expected, try a different approach or look for an alternative path
+        - Always check if the expected result occurred after each action before proceeding
+        """
+        
         init_msg = init_msg + obs_prompt
 
         it = 0
@@ -527,29 +737,28 @@ Before taking any action, analyze the provided [Manuals and QA pairs] as a whole
                 # encode image
                 b64_img = encode_image(img_path)
 
-                # format msg
+                # format msg for Gemini
                 if not args.text_only:
-                    curr_msg = format_msg(it, init_msg, pdf_obs, warn_obs, b64_img, web_eles_text)
+                    curr_msg = format_msg_for_gemini(it, init_msg, pdf_obs, warn_obs, b64_img, web_eles_text)
                 else:
-                    curr_msg = format_msg_text_only(it, init_msg, pdf_obs, warn_obs, ac_tree)
-                messages.append(curr_msg)
+                    curr_msg = format_msg_text_only_for_gemini(it, init_msg, pdf_obs, warn_obs, ac_tree)
             else:
                 curr_msg = {
-                    'role': 'user',
-                    'content': fail_obs
+                    'contents': [
+                        {'role': 'user',
+                         'parts': [
+                             {'text': fail_obs}
+                         ]
+                        }
+                    ]
                 }
-                messages.append(curr_msg)
 
-            # Clip messages, too many attached images may cause confusion
-            if not args.text_only:
-                messages = clip_message_and_obs(messages, args.max_attached_imgs)
-            else:
-                messages = clip_message_and_obs_text_only(messages, args.max_attached_imgs)
+            # Call Gemini API
+            prompt_tokens, completion_tokens, api_call_error, response, conversation = call_gemini_api(
+                args, genai_client, curr_msg, conversation
+            )
 
-            # Call GPT-4v API
-            prompt_tokens, completion_tokens, gpt_call_error, openai_response = call_gpt4v_api(args, client, messages)
-
-            if gpt_call_error:
+            if api_call_error:
                 break
             else:
                 accumulate_prompt_token += prompt_tokens
@@ -557,27 +766,26 @@ Before taking any action, analyze the provided [Manuals and QA pairs] as a whole
                 logging.info(
                     f'Accumulate Prompt Tokens: {accumulate_prompt_token}; Accumulate Completion Tokens: {accumulate_completion_token}')
                 logging.info('API call complete...')
-            gpt_4v_res = openai_response.choices[0].message.content
-            messages.append({'role': 'assistant', 'content': gpt_4v_res})
-
+            
+            gemini_response = response.text
+            logging.info(f"Gemini response: {gemini_response}")
+            
             # remove the rects on the website
             if (not args.text_only) and rects:
                 logging.info(f"Num of interactive elements: {len(rects)}")
                 for rect_ele in rects:
                     driver_task.execute_script("arguments[0].remove()", rect_ele)
                 rects = []
-                # driver_task.save_screenshot(os.path.join(task_dir, 'screenshot{}_no_box.png'.format(it)))
 
             # extract action info
             try:
-                assert 'Thought:' in gpt_4v_res and 'Action:' in gpt_4v_res
+                assert 'Thought:' in gemini_response and 'Action:' in gemini_response
             except AssertionError as e:
                 logging.error(e)
                 fail_obs = "Format ERROR: Both 'Thought' and 'Action' should be included in your reply."
                 continue
 
-            # bot_thought = re.split(pattern, gpt_4v_res)[1].strip()
-            chosen_action = re.split(pattern, gpt_4v_res)[2].strip()
+            chosen_action = re.split(pattern, gemini_response)[2].strip()
             # print(chosen_action)
             action_key, info = extract_information(chosen_action)
 
@@ -597,10 +805,8 @@ Before taking any action, analyze the provided [Manuals and QA pairs] as a whole
                         click_ele_number = info[0]
                         element_box = obs_info[click_ele_number]['union_bound']
                         element_box_center = (element_box[0] + element_box[2] // 2,
-                                              element_box[1] + element_box[3] // 2)
-                        web_ele = driver_task.execute_script(
-                            "return document.elementFromPoint(arguments[0], arguments[1]);", element_box_center[0],
-                            element_box_center[1])
+                                            element_box[1] + element_box[3] // 2)
+                        web_ele = driver_task.execute_script("return document.elementFromPoint(arguments[0], arguments[1]);", element_box_center[0], element_box_center[1])
 
                     ele_tag_name = web_ele.tag_name.lower()
                     ele_type = web_ele.get_attribute("type")
@@ -614,13 +820,10 @@ Before taking any action, analyze the provided [Manuals and QA pairs] as a whole
                         time.sleep(10)
                         current_files = sorted(os.listdir(args.download_dir))
 
-                        current_download_file = [pdf_file for pdf_file in current_files if
-                                                 pdf_file not in download_files and pdf_file.endswith('.pdf')]
+                        current_download_file = [pdf_file for pdf_file in current_files if pdf_file not in download_files and pdf_file.endswith('.pdf')]
                         if current_download_file:
                             pdf_file = current_download_file[0]
-                            pdf_obs = get_pdf_retrieval_ans_from_assistant(client,
-                                                                           os.path.join(args.download_dir, pdf_file),
-                                                                           task['ques'])
+                            pdf_obs = get_pdf_retrieval_ans_from_gemini(genai_client, os.path.join(args.download_dir, pdf_file), task['ques'])
                             shutil.copy(os.path.join(args.download_dir, pdf_file), task_dir)
                             pdf_obs = "You downloaded a PDF file, I ask the Assistant API to answer the task based on the PDF file and get the following response: " + pdf_obs
                         download_files = current_files
@@ -639,10 +842,8 @@ Before taking any action, analyze the provided [Manuals and QA pairs] as a whole
                         type_ele_number = info['number']
                         element_box = obs_info[type_ele_number]['union_bound']
                         element_box_center = (element_box[0] + element_box[2] // 2,
-                                              element_box[1] + element_box[3] // 2)
-                        web_ele = driver_task.execute_script(
-                            "return document.elementFromPoint(arguments[0], arguments[1]);", element_box_center[0],
-                            element_box_center[1])
+                                            element_box[1] + element_box[3] // 2)
+                        web_ele = driver_task.execute_script("return document.elementFromPoint(arguments[0], arguments[1]);", element_box_center[0], element_box_center[1])
 
                     warn_obs = exec_action_type(info, web_ele, driver_task)
                     if 'wolfram' in task['web']:
@@ -662,6 +863,7 @@ Before taking any action, analyze the provided [Manuals and QA pairs] as a whole
                     driver_task.get('https://www.google.com/')
                     time.sleep(2)
 
+                # This represents the end
                 elif action_key == 'answer':
                     logging.info(info['content'])
                     logging.info('finish!!')
@@ -674,16 +876,23 @@ Before taking any action, analyze the provided [Manuals and QA pairs] as a whole
                 logging.error('driver error info:')
                 logging.error(e)
                 if 'element click intercepted' not in str(e):
-                    fail_obs = "The action you have chosen cannot be exected. Please double-check if you have selected the wrong Numerical Label or Action or Action format. Then provide the revised Thought and Action."
+                    fail_obs = "The action you have chosen cannot be executed. Please double-check if you have selected the wrong Numerical Label or Action or Action format. Then provide the revised Thought and Action."
                 else:
                     fail_obs = ""
                 time.sleep(2)
 
-        print_message(messages, task_dir)
         driver_task.quit()
-        logging.info(f'Total cost: {accumulate_prompt_token / 1000 * 0.01 + accumulate_completion_token / 1000 * 0.03}')
+        # Since Gemini might not provide token usage in the same format as OpenAI
+        logging.info(f'Task {task["id"]} completed')
 
 
 if __name__ == '__main__':
     main()
     print('End of process')
+
+
+
+
+
+
+

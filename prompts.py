@@ -30,6 +30,11 @@ Key Guidelines You MUST follow:
 3) Focus on the numerical labels in the TOP LEFT corner of each rectangle (element). Ensure you don't mix them up with other numbers (e.g. Calendar) on the page.
 4) Focus on the date in task, you must look for results that match the date. It may be necessary to find the correct year, month and day at calendar.
 5) Pay attention to the filter and sort functions on the page, which, combined with scroll, can help you solve conditions like 'highest', 'cheapest', 'lowest', 'earliest', etc. Try your best to find the answer that best fits the task.
+* Manual Following Guidelines *
+1) If provided with a step-by-step manual or instructions, ALWAYS follow them precisely in the given order.
+2) For each action you take, explicitly state which step from the manual you are following.
+3) Do not deviate from the manual's instructions unless absolutely necessary (e.g., the website has changed).
+4) If the manual contains numbered steps, follow them in sequence from Step 1 to completion.
 
 Your reply should strictly follow the format:
 Thought: {Your brief thoughts (briefly summarize the info that will help ANSWER)}
@@ -69,6 +74,11 @@ Key Guidelines You MUST follow:
 2) Vsit video websites like YouTube is allowed BUT you can't play videos. Clicking to download PDF is allowed and will be analyzed by the Assistant API.
 3) Focus on the date in task, you must look for results that match the date. It may be necessary to find the correct year, month and day at calendar.
 4) Pay attention to the filter and sort functions on the page, which, combined with scroll, can help you solve conditions like 'highest', 'cheapest', 'lowest', 'earliest', etc. Try your best to find the answer that best fits the task.
+* Manual Following Guidelines *
+1) If provided with a step-by-step manual or instructions, ALWAYS follow them precisely in the given order.
+2) For each action you take, explicitly state which step from the manual you are following.
+3) Do not deviate from the manual's instructions unless absolutely necessary (e.g., the website has changed).
+4) If the manual contains numbered steps, follow them in sequence from Step 1 to completion.
 
 Your reply should strictly follow the format:
 Thought: {Your brief thoughts (briefly summarize the info that will help ANSWER)}
